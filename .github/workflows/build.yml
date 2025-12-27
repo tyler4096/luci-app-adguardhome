@@ -1,0 +1,76 @@
+name: Build luci-app-adguardhome for ImmortalWRT
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  TARGET: mediatek/filogic
+  ARCH: aarch64_cortex-a53
+  SDK_VERSION: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
+          gettext git java-propose-classpath libelf-dev libncurses5-dev \
+          libncursesw5-dev libssl-dev python3 python3-pip rsync subversion \
+          swig time unzip wget zlib1g-dev zstd  # ← 关键：添加 zstd
+
+      - name: Download ImmortalWRT SDK (.zst format)
+        run: |
+          BASE_URL="https://downloads.immortalwrt.org/snapshots/targets/${{ env.TARGET }}"
+          if [ -n "${{ env.SDK_VERSION }}" ]; then
+            FILENAME="immortalwrt-sdk-${{ env.SDK_VERSION }}-${{ env.TARGET//\//_}}_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+            SDK_URL="$BASE_URL/$FILENAME"
+          else
+            # 自动获取最新 .tar.zst 文件名
+            LATEST_FILE=$(curl -s "$BASE_URL/" | grep -o 'immortalwrt-sdk-[^"]*\.tar\.zst' | head -n1)
+            if [ -z "$LATEST_FILE" ]; then
+              echo "❌ No .tar.zst SDK found!"
+              exit 1
+            fi
+            SDK_URL="$BASE_URL/$LATEST_FILE"
+          fi
+          echo "📥 Downloading SDK from: $SDK_URL"
+          wget "$SDK_URL" -O sdk.tar.zst
+
+      - name: Extract SDK (.zst)
+        run: |
+          # 使用 zstd 解压
+          zstd -dc sdk.tar.zst | tar -x
+          mv immortalwrt-sdk-* sdk
+
+      - name: Prepare package
+        run: |
+          cd sdk
+          mkdir -p package/luci-app-adguardhome
+          cp -r $Github_WORKSPACE/* package/luci-app-adguardhome/
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure and compile
+        run: |
+          cd sdk
+          make defconfig
+          echo "CONFIG_PACKAGE_luci-app-adguardhome=m" >> .config
+          make package/luci-app-adguardhome/compile V=s
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-adguardhome-ipk-${{ env.TARGET }}
+          path: |
+            sdk/bin/packages/${{ env.ARCH }}/luci/luci-app-adguardhome_*.ipk
+          if-no-files-found: error
