@@ -10,6 +10,7 @@ on:
 env:
   TARGET: mediatek/filogic
   ARCH: aarch64_cortex-a53
+  # 可选：指定 SDK 版本，如 "23.05.3"；留空则自动使用 latest snapshot
   SDK_VERSION: ""
 
 jobs:
@@ -20,17 +21,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt update
           sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
-          gettext git java-propose-classpath libelf-dev libncurses5-dev \
-          libncursesw5-dev libssl-dev python3 python3-pip rsync subversion \
-          swig time unzip wget zlib1g-dev zstd
+            gettext git libelf-dev libncurses5-dev libncursesw5-dev libssl-dev \
+            python3 python3-pip rsync subversion swig time unzip wget zlib1g-dev zstd
 
       - name: Download ImmortalWRT SDK (.zst format)
         run: |
-          # Convert target path to filename-safe format (replace / with _)
           TARGET_SAFE="${{ env.TARGET }}"
           TARGET_SAFE="${TARGET_SAFE//\//_}"
           BASE_URL="https://downloads.immortalwrt.org/snapshots/targets/${{ env.TARGET }}"
@@ -39,7 +38,6 @@ jobs:
             FILENAME="immortalwrt-sdk-${{ env.SDK_VERSION }}-${TARGET_SAFE}_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
             SDK_URL="$BASE_URL/$FILENAME"
           else
-            # Auto-detect latest .tar.zst SDK
             LATEST_FILE=$(curl -s "$BASE_URL/" | grep -o 'immortalwrt-sdk-[^"]*\.tar\.zst' | head -n1)
             if [ -z "$LATEST_FILE" ]; then
               echo "❌ No .tar.zst SDK found at $BASE_URL"
@@ -48,34 +46,52 @@ jobs:
             SDK_URL="$BASE_URL/$LATEST_FILE"
           fi
 
-          echo "📥 Downloading SDK from: $SDK_URL"
+          echo "📥 Downloading SDK: $SDK_URL"
           wget "$SDK_URL" -O sdk.tar.zst
 
-      - name: Extract SDK (.zst)
+      - name: Extract SDK
         run: |
           zstd -dc sdk.tar.zst | tar -x
           mv immortalwrt-sdk-* sdk
 
-      - name: Prepare package
+      - name: Prepare local package and feeds
         run: |
           cd sdk
+
+          # 将当前仓库作为本地包放入 package/
           mkdir -p package/luci-app-adguardhome
-          # Only copy the plugin files, exclude build artifacts like 'sdk'
-          rsync -av --exclude='sdk' --exclude='.git' --exclude='.github' "$GITHUB_WORKSPACE/" package/luci-app-adguardhome/
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          rsync -av --exclude='sdk' --exclude='.git' --exclude='.github' --exclude='*.md' "$GITHUB_WORKSPACE/" package/luci-app-adguardhome/
 
-      - name: Configure and compile
+          # 确保 feeds.conf.default 包含 packages 源（adguardhome 所在）
+          if ! grep -q "^src-git packages" feeds.conf.default; then
+            echo "Adding packages feed..."
+            echo "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          fi
+
+          # 更新并安装所需包
+          ./scripts/feeds update -a
+          ./scripts/feeds install adguardhome
+          ./scripts/feeds install luci-app-adguardhome
+
+      - name: Compile ONLY required packages (no full build!)
         run: |
           cd sdk
-          make defconfig
-          echo "CONFIG_PACKAGE_luci-app-adguardhome=m" >> .config
-          make package/luci-app-adguardhome/compile V=s
+          # 编译 AdGuard Home 主程序（用户态二进制）
+          make package/feeds/packages/adguardhome/compile V=s
+          # 编译 LuCI 前端插件
+          make package/feeds/luci/luci-app-adguardhome/compile V=s
 
-      - name: Upload IPK artifact
+      - name: Debug: list generated IPKs
+        run: |
+          echo "🔍 Generated .ipk files:"
+          find sdk/bin/packages -name "*.ipk" | grep -E "(adguardhome|luci-app-adguardhome)" | sort
+
+      - name: Upload adguardhome + luci-app-adguardhome IPKs
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-adguardhome-ipk-mediatek_filogic
+          name: adguardhome-luci-ipk-${{ env.TARGET }}
           path: |
+            sdk/bin/packages/${{ env.ARCH }}/packages/adguardhome_*.ipk
             sdk/bin/packages/${{ env.ARCH }}/luci/luci-app-adguardhome_*.ipk
           if-no-files-found: error
+          compression-level: 6
