@@ -26,29 +26,33 @@ jobs:
           sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
           gettext git java-propose-classpath libelf-dev libncurses5-dev \
           libncursesw5-dev libssl-dev python3 python3-pip rsync subversion \
-          swig time unzip wget zlib1g-dev zstd  # ← 关键：添加 zstd
+          swig time unzip wget zlib1g-dev zstd
 
       - name: Download ImmortalWRT SDK (.zst format)
         run: |
+          # Convert target path to filename-safe format (replace / with _)
+          TARGET_SAFE="${{ env.TARGET }}"
+          TARGET_SAFE="${TARGET_SAFE//\//_}"
           BASE_URL="https://downloads.immortalwrt.org/snapshots/targets/${{ env.TARGET }}"
+
           if [ -n "${{ env.SDK_VERSION }}" ]; then
-            FILENAME="immortalwrt-sdk-${{ env.SDK_VERSION }}-${{ env.TARGET//\//_}}_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+            FILENAME="immortalwrt-sdk-${{ env.SDK_VERSION }}-${TARGET_SAFE}_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
             SDK_URL="$BASE_URL/$FILENAME"
           else
-            # 自动获取最新 .tar.zst 文件名
+            # Auto-detect latest .tar.zst SDK
             LATEST_FILE=$(curl -s "$BASE_URL/" | grep -o 'immortalwrt-sdk-[^"]*\.tar\.zst' | head -n1)
             if [ -z "$LATEST_FILE" ]; then
-              echo "❌ No .tar.zst SDK found!"
+              echo "❌ No .tar.zst SDK found at $BASE_URL"
               exit 1
             fi
             SDK_URL="$BASE_URL/$LATEST_FILE"
           fi
+
           echo "📥 Downloading SDK from: $SDK_URL"
           wget "$SDK_URL" -O sdk.tar.zst
 
       - name: Extract SDK (.zst)
         run: |
-          # 使用 zstd 解压
           zstd -dc sdk.tar.zst | tar -x
           mv immortalwrt-sdk-* sdk
 
@@ -56,7 +60,7 @@ jobs:
         run: |
           cd sdk
           mkdir -p package/luci-app-adguardhome
-          cp -r $Github_WORKSPACE/* package/luci-app-adguardhome/
+          cp -r $GITHUB_WORKSPACE/* package/luci-app-adguardhome/
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
@@ -70,7 +74,7 @@ jobs:
       - name: Upload IPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-adguardhome-ipk-${{ env.TARGET }}
+          name: luci-app-adguardhome-ipk-mediatek_filogic
           path: |
             sdk/bin/packages/${{ env.ARCH }}/luci/luci-app-adguardhome_*.ipk
           if-no-files-found: error
