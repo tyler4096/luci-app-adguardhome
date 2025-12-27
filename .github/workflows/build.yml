@@ -60,7 +60,8 @@ jobs:
         run: |
           cd sdk
           mkdir -p package/luci-app-adguardhome
-          cp -r $GITHUB_WORKSPACE/* package/luci-app-adguardhome/
+          # Only copy the plugin files, exclude build artifacts like 'sdk'
+          rsync -av --exclude='sdk' --exclude='.git' --exclude='.github' "$GITHUB_WORKSPACE/" package/luci-app-adguardhome/
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
